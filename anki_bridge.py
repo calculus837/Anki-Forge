@@ -116,6 +116,21 @@ def store_media_file(filename: str, data: str | bytes) -> dict:
     return _ankiconnect_request("storeMediaFile", filename=filename, data=b64_content)
 
 
+def _normalize_cloze_syntax(text: str) -> str:
+    """Fix common minor syntax variations in Cloze formatting."""
+    if not text:
+        return text
+    # {{c1:word}} -> {{c1::word}} (single colon instead of double)
+    text = re.sub(r'\{\{c(\d+):(?!:)(.*?)\}\}', r'{{c\1::\2}}', text)
+    # {c1::word} -> {{c1::word}} (single outer brace)
+    text = re.sub(r'(?<!\{)\{c(\d+)::(.*?)\}(?!\})', r'{{c\1::\2}}', text)
+    # {{c::word}} -> {{c1::word}} (missing number)
+    text = re.sub(r'\{\{c::(.*?)\}\}', r'{{c1::\1}}', text)
+    # [c1::word] -> {{c1::word}}
+    text = re.sub(r'\[c(\d+)::(.*?)\]', r'{{c\1::\2}}', text)
+    return text
+
+
 def prepare_ankiconnect_payload(
     cards: list,
     deck_name: str,
@@ -130,27 +145,63 @@ def prepare_ankiconnect_payload(
     for card in cards:
         c_type = card.card_type if hasattr(card, "card_type") else card.get("card_type", "Basic")
         front = card.front if hasattr(card, "front") else card.get("front", "")
+        back = card.back if hasattr(card, "back") else card.get("back", "")
         back_html = _build_back_html(card)
         tags = _tags_list(card)
 
-        if c_type == "Basic":
+        # Normalize any slight syntax variations in cloze tags
+        front_norm = _normalize_cloze_syntax(front.strip())
+        back_norm = _normalize_cloze_syntax(back.strip())
+
+        has_cloze_in_front = bool(re.search(r"\{\{c\d+::", front_norm))
+        has_cloze_in_back = bool(re.search(r"\{\{c\d+::", back_norm))
+
+        if c_type == "Cloze":
+            if has_cloze_in_front:
+                note = {
+                    "deckName": deck_name,
+                    "modelName": "Cloze",
+                    "fields": {
+                        "Text": front_norm,
+                        "Back Extra": back_html,
+                        "Extra": back_html,
+                    },
+                    "tags": tags,
+                    "options": {"allowDuplicate": False},
+                }
+            elif has_cloze_in_back:
+                # Cloze was placed in back field instead of front
+                note = {
+                    "deckName": deck_name,
+                    "modelName": "Cloze",
+                    "fields": {
+                        "Text": back_norm,
+                        "Back Extra": f"<b>Prompt:</b> {front_norm}<br><br>{back_html}",
+                        "Extra": f"<b>Prompt:</b> {front_norm}<br><br>{back_html}",
+                    },
+                    "tags": tags,
+                    "options": {"allowDuplicate": False},
+                }
+            else:
+                # No cloze deletions exist! Anki would fail with 'cannot create note for unknown reason'
+                # Fall back safely to Basic model so the card is never rejected.
+                note = {
+                    "deckName": deck_name,
+                    "modelName": "Basic",
+                    "fields": {
+                        "Front": front_norm,
+                        "Back": back_html,
+                    },
+                    "tags": tags,
+                    "options": {"allowDuplicate": False},
+                }
+        else:  # Basic
             note = {
                 "deckName": deck_name,
                 "modelName": "Basic",
                 "fields": {
-                    "Front": front,
+                    "Front": front_norm,
                     "Back": back_html,
-                },
-                "tags": tags,
-                "options": {"allowDuplicate": False},
-            }
-        else:  # Cloze
-            note = {
-                "deckName": deck_name,
-                "modelName": "Cloze",
-                "fields": {
-                    "Text": front,
-                    "Back Extra": back_html,
                 },
                 "tags": tags,
                 "options": {"allowDuplicate": False},
@@ -397,22 +448,34 @@ def build_apkg(
     cloze_model = _make_cloze_model()
 
     for card in cards:
+        front = card.front if hasattr(card, "front") else card.get("front", "")
+        back = card.back if hasattr(card, "back") else card.get("back", "")
+        c_type = card.card_type if hasattr(card, "card_type") else card.get("card_type", "Basic")
         back_html = _build_back_html(card)
         tags = _tags_list(card)
-        # Stable note ID: hash of front text to avoid duplicates on re-export
-        note_id = abs(hash(card.front + card.card_type)) % (10 ** 13)
 
-        if card.card_type == "Basic":
+        front_norm = _normalize_cloze_syntax(front.strip())
+        back_norm = _normalize_cloze_syntax(back.strip())
+
+        has_cloze_in_front = bool(re.search(r"\{\{c\d+::", front_norm))
+        has_cloze_in_back = bool(re.search(r"\{\{c\d+::", back_norm))
+
+        # Stable note ID: hash of front text to avoid duplicates on re-export
+        note_id = abs(hash(front_norm + c_type)) % (10 ** 13)
+
+        if c_type == "Cloze" and (has_cloze_in_front or has_cloze_in_back):
+            text_field = front_norm if has_cloze_in_front else back_norm
+            extra_field = back_html if has_cloze_in_front else f"<b>Prompt:</b> {front_norm}<br><br>{back_html}"
             note = genanki.Note(
-                model=basic_model,
-                fields=[card.front, back_html],
+                model=cloze_model,
+                fields=[text_field, extra_field],
                 tags=tags,
                 guid=note_id,
             )
-        else:  # Cloze
+        else:
             note = genanki.Note(
-                model=cloze_model,
-                fields=[card.front, back_html],
+                model=basic_model,
+                fields=[front_norm, back_html],
                 tags=tags,
                 guid=note_id,
             )

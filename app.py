@@ -975,7 +975,44 @@ else:
 
                 // 3. Add Notes
                 status.innerHTML = `⏳ Adding ${{NOTES.length}} card(s) to deck <b>${{DECK_NAME}}</b>…`;
-                const noteIds = await ankiFetch("addNotes", {{ notes: NOTES }});
+                let noteIds = [];
+                try {{
+                  noteIds = await ankiFetch("addNotes", {{ notes: NOTES }});
+                }} catch (batchErr) {{
+                  console.warn("Batch addNotes failed, trying notes individually with fallback:", batchErr);
+                  noteIds = [];
+                  for (let i = 0; i < NOTES.length; i++) {{
+                    const note = NOTES[i];
+                    status.innerHTML = `⏳ Adding note ${{i + 1}} of ${{NOTES.length}}…`;
+                    try {{
+                      const singleId = await ankiFetch("addNote", {{ note: note }});
+                      noteIds.push(singleId);
+                    }} catch (singleErr) {{
+                      console.warn(`Note ${{i + 1}} failed:`, singleErr);
+                      if (note.modelName === "Cloze") {{
+                        // Retry as Basic note model
+                        try {{
+                          const fallbackNote = {{
+                            deckName: note.deckName,
+                            modelName: "Basic",
+                            fields: {{
+                              "Front": note.fields.Text || note.fields.Front || "",
+                              "Back": note.fields["Back Extra"] || note.fields.Extra || note.fields.Back || ""
+                            }},
+                            tags: note.tags,
+                            options: note.options
+                          }};
+                          const fbId = await ankiFetch("addNote", {{ note: fallbackNote }});
+                          noteIds.push(fbId);
+                          continue;
+                        }} catch (fbErr) {{
+                          console.warn(`Fallback for note ${{i + 1}} failed:`, fbErr);
+                        }}
+                      }}
+                      noteIds.push(null);
+                    }}
+                  }}
+                }}
 
                 let success = 0;
                 let skipped = 0;
