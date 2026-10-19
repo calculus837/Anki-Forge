@@ -6,6 +6,8 @@ Dual export engine:
   Option B — Build and return a .apkg file bytes via genanki
 """
 
+from __future__ import annotations
+
 import base64
 import io
 import json
@@ -14,7 +16,7 @@ import random
 import re
 import tempfile
 import time
-from typing import List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import genanki
 import requests
@@ -28,22 +30,28 @@ from gemini_engine import AnkiCard
 ANKICONNECT_URL = "http://localhost:8765"
 
 
-def _build_back_html(card: AnkiCard) -> str:
+def _build_back_html(card: Any) -> str:
     """
     Combine back, intuition, and source_reference into a rich HTML string
     suitable for Anki's back field / extra field.
     """
+    back = card.back if hasattr(card, "back") else card.get("back", "")
+    intuition = card.intuition if hasattr(card, "intuition") else card.get("intuition", "")
+    source_ref = card.source_reference if hasattr(card, "source_reference") else card.get("source_reference", "")
     return (
-        f"{card.back}"
+        f"{back}"
         f"<br><br><hr>"
-        f"<b>💡 First-Principles Intuition:</b> {card.intuition}"
-        f"<br><small><i>📖 Source: {card.source_reference}</i></small>"
+        f"<b>💡 First-Principles Intuition:</b> {intuition}"
+        f"<br><small><i>📖 Source: {source_ref}</i></small>"
     )
 
 
-def _tags_list(card: AnkiCard) -> List[str]:
+def _tags_list(card: Any) -> List[str]:
     """Return the card's tags as a flat list, replacing spaces with underscores."""
-    return [t.replace(" ", "_") for t in card.tags]
+    tags = card.tags if hasattr(card, "tags") else card.get("tags", [])
+    if isinstance(tags, list):
+        return [str(t).replace(" ", "_") for t in tags]
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -109,41 +117,28 @@ def store_media_file(filename: str, data: str | bytes) -> dict:
 
 
 def prepare_ankiconnect_payload(
-    cards: List[AnkiCard],
+    cards: list,
     deck_name: str,
-    media_map: Optional[dict] = None,
-) -> Tuple[list, list]:
+) -> dict:
     """
-    Construct the notes and media payloads for AnkiConnect.
-    Returns:
-        (notes, media_list) where media_list is a list of {'filename': ..., 'data': base64_str}
-    """
-    media_list = []
-    if media_map:
-        for fname, data in media_map.items():
-            if isinstance(data, bytes):
-                b64_content = base64.b64encode(data).decode("utf-8")
-            elif isinstance(data, dict):
-                b64_content = data.get("b64") or (base64.b64encode(data["bytes"]).decode("utf-8") if "bytes" in data else "")
-            else:
-                b64_str = str(data)
-                if "," in b64_str and "base64" in b64_str:
-                    b64_content = b64_str.split(",", 1)[1]
-                else:
-                    b64_content = b64_str
-            media_list.append({"filename": fname, "data": b64_content})
+    Construct the AnkiConnect 'addNotes' request payload.
 
+    Returns:
+        dict: {"action": "addNotes", "version": 6, "params": {"notes": [...]}}
+    """
     notes = []
     for card in cards:
+        c_type = card.card_type if hasattr(card, "card_type") else card.get("card_type", "Basic")
+        front = card.front if hasattr(card, "front") else card.get("front", "")
         back_html = _build_back_html(card)
         tags = _tags_list(card)
 
-        if card.card_type == "Basic":
+        if c_type == "Basic":
             note = {
                 "deckName": deck_name,
                 "modelName": "Basic",
                 "fields": {
-                    "Front": card.front,
+                    "Front": front,
                     "Back": back_html,
                 },
                 "tags": tags,
@@ -154,7 +149,7 @@ def prepare_ankiconnect_payload(
                 "deckName": deck_name,
                 "modelName": "Cloze",
                 "fields": {
-                    "Text": card.front,
+                    "Text": front,
                     "Back Extra": back_html,
                 },
                 "tags": tags,
@@ -162,11 +157,17 @@ def prepare_ankiconnect_payload(
             }
         notes.append(note)
 
-    return notes, media_list
+    return {
+        "action": "addNotes",
+        "version": 6,
+        "params": {
+            "notes": notes,
+        },
+    }
 
 
 def push_cards_to_anki(
-    cards: List[AnkiCard],
+    cards: list,
     deck_name: str,
     media_map: Optional[dict] = None,
 ) -> Tuple[int, List[str]]:
@@ -179,23 +180,24 @@ def push_cards_to_anki(
     """
     ensure_deck(deck_name)
 
-    notes, media_list = prepare_ankiconnect_payload(cards, deck_name, media_map)
-
     # Store media files in Anki collection.media first so <img> tags resolve
-    for item in media_list:
-        try:
-            store_media_file(item["filename"], item["data"])
-        except Exception:
-            pass
+    if media_map:
+        for fname, f_data in media_map.items():
+            try:
+                store_media_file(fname, f_data)
+            except Exception:
+                pass
 
-    result = _ankiconnect_request("addNotes", notes=notes)
+    payload = prepare_ankiconnect_payload(cards, deck_name)
+    result = _ankiconnect_request("addNotes", **payload["params"])
     note_ids = result.get("result", [])
 
     errors = []
     success = 0
     for i, nid in enumerate(note_ids):
         if nid is None:
-            errors.append(f"Card {i + 1} ('{cards[i].front[:40]}…') was rejected (duplicate or invalid).")
+            front_text = cards[i].front if hasattr(cards[i], "front") else cards[i].get("front", "")
+            errors.append(f"Card {i + 1} ('{front_text[:40]}…') was rejected (duplicate or invalid).")
         else:
             success += 1
 

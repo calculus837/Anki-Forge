@@ -827,12 +827,13 @@ else:
     # ---------------------------------------------------------------------------
 
     def _render_browser_bridge_html(
-        notes: list,
+        payload: list | dict,
         media: list,
         deck_name: str,
         disabled: bool = False,
     ) -> str:
         """Generate client-side HTML/JS component to push cards directly to 127.0.0.1:8765."""
+        notes = payload.get("params", {}).get("notes", []) if isinstance(payload, dict) else payload
         notes_json = json.dumps(notes)
         media_json = json.dumps(media)
         deck_json = json.dumps(deck_name)
@@ -1074,17 +1075,29 @@ else:
         st.markdown("### ⚡ Live Sync: Push to Desktop Anki")
         st.caption("Directly sync flashcards and media into your running Anki desktop app.")
 
-        # Prepare payloads for both Browser Bridge and local push
-        notes_payload, media_payload = prepare_ankiconnect_payload(
+        # Prepare payload for AnkiConnect
+        ankiconnect_payload = prepare_ankiconnect_payload(
             cards_to_export,
             deck_name,
-            media_map=st.session_state.get("staged_media", {}),
         )
+
+        # Extract media payload if any staged media
+        media_payload = []
+        if st.session_state.get("staged_media"):
+            for fname, data in st.session_state.staged_media.items():
+                if isinstance(data, bytes):
+                    b64 = base64.b64encode(data).decode("utf-8")
+                elif isinstance(data, dict):
+                    b64 = data.get("b64") or (base64.b64encode(data["bytes"]).decode("utf-8") if "bytes" in data else "")
+                else:
+                    b64_str = str(data)
+                    b64 = b64_str.split(",", 1)[1] if "," in b64_str and "base64" in b64_str else b64_str
+                media_payload.append({"filename": fname, "data": b64})
 
         # 1. Cloud-to-Local Push (Browser Bridge) via st.components.v1.html
         bridge_disabled = (len(cards_to_export) == 0)
         bridge_html = _render_browser_bridge_html(
-            notes=notes_payload,
+            payload=ankiconnect_payload,
             media=media_payload,
             deck_name=deck_name,
             disabled=bridge_disabled,
