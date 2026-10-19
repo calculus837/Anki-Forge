@@ -1,0 +1,23 @@
+# Environment and secrets
+.env
+.env.*
+.streamlit/secrets.toml
+
+# Python virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Anki package exports
+*.apkg
+
+# OS files
+.DS_Store
+Thumbs.db
