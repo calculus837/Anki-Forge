@@ -18,6 +18,7 @@ __pycache__/
 # Anki package exports
 *.apkg
 
-# OS files
+# OS & Shortcut files
 .DS_Store
 Thumbs.db
+*.lnk
